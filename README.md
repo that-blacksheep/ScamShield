@@ -110,8 +110,8 @@ scamshield/
 
 ## Team
 
-Built by **Team ScamShield** at **Avenir 2026 (Innovatrix Hackathon)**  
-Developed under **ScamShield Forensic Labs**
+Built by **Team Fries** at **Avenir 2026 (Innovatrix Hackathon)**  
+
 
 ---
 
