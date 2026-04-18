@@ -1,17 +1,31 @@
-# Web Framework & Server
+# ─────────────────────────────────────────────────────────────
+# ScamShield — Python Backend Requirements
+# Install with: pip install -r req.txt
+# Python 3.10+ required
+# ─────────────────────────────────────────────────────────────
+
+# ── Web Framework & ASGI Server ────────────────────────────────
 fastapi>=0.100.0
-uvicorn>=0.20.0
+uvicorn[standard]>=0.23.0
 pydantic>=2.0.0
+pydantic-settings>=2.0.0        # BaseSettings with SettingsConfigDict (Pydantic V2)
 
-# Cyber Check Dependencies
-python-whois>=0.8.0
-rapidfuzz>=3.0.0
+# ── Cyber Intelligence Engine (checks/cyber.py) ───────────────
+python-whois>=0.8.0             # WHOIS domain-age lookups
+rapidfuzz>=3.0.0                # Fuzzy string matching for typosquat detection
 
-# ML & Image Processing
-joblib>=1.3.0
-scikit-learn>=1.3.0
-Pillow>=10.0.0
-imagehash>=4.3.0
+# ── ML / NLP Layer (checks/ml.py + train_classifier.py) ───────
+scikit-learn>=1.3.0             # TfidfVectorizer, LogisticRegression, Pipeline
+joblib>=1.3.0                   # Model serialisation / deserialisation
 
-# Document Handling
-pdfplumber>=0.10.0
+# ─────────────────────────────────────────────────────────────
+# Frontend (fries-rishi-main/scamshield-frontend)
+# Node.js 18+ and npm required — install with: npm install
+# ─────────────────────────────────────────────────────────────
+# react                ^19.2.4
+# react-dom            ^19.2.4
+# axios                ^1.15.0      (API client)
+# framer-motion        ^12.38.0     (animations)
+# lucide-react         ^1.8.0       (icon library)
+# pdfjs-dist           ^3.11.174    (PDF parsing in-browser)
+# vite                 ^8.0.4       (build tool / dev server)
