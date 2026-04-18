@@ -65,8 +65,9 @@ export default function App() {
     setMessages(prev => [...prev, { role, content, id: Date.now() + Math.random() }])
 
   const handleSend = async (text, extra = {}) => {
-    const userText = text || input.trim()
-    if (!userText && !extra.offer_text) return
+    let userText = text || input.trim();
+    userText = userText.replace(/^["']|["']$/g, '');
+    if (!userText && !extra.offer_text) return;
     setInput('')
     pushMsg('user', userText || '[PDF uploaded]')
     setLoading(true)
@@ -75,12 +76,50 @@ export default function App() {
     const stepInterval = setInterval(() =>
       setLoadingStep(s => Math.min(s + 1, LOADING_STEPS.length - 1)), 800)
 
+    let extractedEmail = '';
+    const emailMatch = userText.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+    if (emailMatch) extractedEmail = emailMatch[0];
+
+    const urlRegex = /(https?:\/\/[^\s]+)|(www\.[^\s]+)|([a-zA-Z0-9-]+\.[a-zA-Z]{2,}(\/[^\s]*)?)/i;
+    const isUrlText = urlRegex.test(userText);
+
+    if (activeTab === 'JOB URL' && !isUrlText) {
+      pushMsg('error', 'The string entered is not a valid URL.');
+      setLoading(false);
+      return;
+    }
+    if (activeTab === 'E-MAIL' && !emailMatch) {
+      pushMsg('error', 'The string entered is not a valid email address.');
+      setLoading(false);
+      return;
+    }
+    if (activeTab === 'SALARY' && !userText.match(/\d/)) {
+      pushMsg('error', 'The string entered does not contain a valid salary amount.');
+      setLoading(false);
+      return;
+    }
+
+    const isUrl = activeTab === 'JOB URL' && userText.length < 300 && isUrlText;
+
+    // Auto-extract company name from URL domain for better analysis
+    const KNOWN_BRANDS = ['google','microsoft','amazon','apple','meta','facebook','netflix','tesla','openai','nvidia','infosys','tcs','wipro','hcl','cognizant','capgemini','flipkart','paytm','zomato','swiggy','razorpay','zerodha','freshworks','zoho','meesho','cred','nykaa','delhivery','ibm','oracle','sap','salesforce','adobe','uber','airbnb','linkedin','spotify','shopify','stripe','deloitte','accenture','pwc','kpmg','ey','mckinsey','hdfc','icici','sbi','kotak','reliance','tata','mahindra','bajaj','samsung','sony','bosch','siemens'];
+    let autoCompany = 'Unknown';
+    if (isUrl) {
+      const urlLower = userText.toLowerCase();
+      for (const brand of KNOWN_BRANDS) {
+        if (urlLower.includes(brand)) {
+          autoCompany = brand.charAt(0).toUpperCase() + brand.slice(1);
+          break;
+        }
+      }
+    }
+
     const payload = {
-      job_url:         activeTab === 'JOB URL' ? userText : 'N/A',
-      recruiter_email: activeTab === 'E-MAIL'  ? userText : '',
-      salary_offered:  activeTab === 'SALARY'  ? parseFloat(userText.replace(/[^0-9.]/g, '')) || 0 : 0,
-      company_claimed: activeTab === 'COMPANY' ? userText : 'Unknown',
-      offer_text:      extra.offer_text || userText || '',
+      job_url:         isUrl ? userText.trim() : 'N/A',
+      recruiter_email: extractedEmail,
+      salary_offered:  activeTab === 'SALARY'  ? parseFloat(userText.replace(/[^0-9.]/g, '')) || null : null,
+      company_claimed: activeTab === 'COMPANY' ? userText.trim() : autoCompany,
+      offer_text:      extra.offer_text || (activeTab === 'E-MAIL' ? userText : (!isUrl && activeTab === 'JOB URL' ? userText : '')),
       phone_number:    '',
     }
 
@@ -501,23 +540,31 @@ export default function App() {
                       const d = msg.content
                       const color = VERDICT_COLOR[d.verdict] || '#6b7280'
                       const signals = d.signals?.cyber_signals?.filter(s => s.flag) || []
+                      const cleanSignals = d.signals?.cyber_signals?.filter(s => !s.flag && s.confidence > 0) || []
+                      const mlDetails = d.signals?.ml_details || {}
+                      const fieldAnalysis = d.field_analysis || {}
+
+                      const RISK_COLOR = { CRITICAL: '#dc2626', HIGH: '#ea580c', MEDIUM: '#d97706', LOW: '#16a34a' }
+                      const RISK_BG = { CRITICAL: '#fef2f2', HIGH: '#fff7ed', MEDIUM: '#fffbeb', LOW: '#f0fdf4' }
+
                       return (
                         <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
                           <div style={{
                             background: '#fff', borderRadius: '18px 18px 18px 4px',
-                            padding: '20px 24px', maxWidth: '85%',
+                            padding: '24px 28px', maxWidth: '90%',
                             boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
-                            minWidth: 300
+                            minWidth: 340
                           }}>
                             {/* Score row */}
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 18 }}>
                               <div style={{
-                                width: 64, height: 64, borderRadius: '50%',
+                                width: 68, height: 68, borderRadius: '50%',
                                 background: SCORE_BG(d.trust_score),
                                 display: 'flex', flexDirection: 'column',
-                                alignItems: 'center', justifyContent: 'center', flexShrink: 0
+                                alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                                border: `2px solid ${SCORE_TEXT(d.trust_score)}22`
                               }}>
-                                <span style={{ fontSize: 22, fontWeight: 800, color: SCORE_TEXT(d.trust_score) }}>{d.trust_score}</span>
+                                <span style={{ fontSize: 24, fontWeight: 800, color: SCORE_TEXT(d.trust_score) }}>{d.trust_score}</span>
                                 <span style={{ fontSize: 8, color: SCORE_TEXT(d.trust_score), letterSpacing: '0.1em', fontWeight: 600 }}>TRUST</span>
                               </div>
                               <div>
@@ -531,33 +578,101 @@ export default function App() {
                               </div>
                             </div>
 
-                            {/* Signals */}
+                            {/* Threat Signals (flagged) */}
                             {signals.length > 0 && (
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
-                                {signals.map((s, i) => (
-                                  <div key={i} style={{
-                                    background: '#fef2f2', borderLeft: '3px solid #dc2626',
-                                    borderRadius: '0 8px 8px 0', padding: '8px 12px'
-                                  }}>
-                                    <div style={{ fontSize: 10, color: '#9ca3af', fontWeight: 600, marginBottom: 2, letterSpacing: '0.08em' }}>{s.category}</div>
-                                    <div style={{ fontSize: 12, color: '#374151' }}>{s.reason}</div>
-                                  </div>
-                                ))}
+                              <div style={{ marginBottom: 16 }}>
+                                <div style={{ fontSize: 11, fontWeight: 700, color: '#dc2626', letterSpacing: '0.08em', marginBottom: 8 }}>⚠ THREAT SIGNALS ({signals.length})</div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                  {signals.map((s, i) => (
+                                    <div key={i} style={{
+                                      background: '#fef2f2', borderLeft: `3px solid ${s.penalty > 20 ? '#dc2626' : s.penalty > 10 ? '#ea580c' : '#d97706'}`,
+                                      borderRadius: '0 8px 8px 0', padding: '8px 12px'
+                                    }}>
+                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+                                        <span style={{ fontSize: 10, color: '#9ca3af', fontWeight: 600, letterSpacing: '0.08em' }}>{s.category}</span>
+                                        <span style={{ fontSize: 9, color: '#9ca3af', fontWeight: 600, background: '#f3f4f6', padding: '1px 6px', borderRadius: 4 }}>-{s.penalty} pts | {Math.round(s.confidence * 100)}%</span>
+                                      </div>
+                                      <div style={{ fontSize: 12, color: '#374151' }}>{s.reason}</div>
+                                    </div>
+                                  ))}
+                                </div>
                               </div>
                             )}
 
                             {signals.length === 0 && (
                               <div style={{
                                 background: '#f0fdf4', borderLeft: '3px solid #16a34a',
-                                borderRadius: '0 8px 8px 0', padding: '8px 12px', marginBottom: 14,
+                                borderRadius: '0 8px 8px 0', padding: '8px 12px', marginBottom: 16,
                                 fontSize: 12, color: '#166534'
-                              }}>✓ No threat signals detected</div>
+                              }}>✓ No threat signals detected — all cyber checks passed</div>
+                            )}
+
+                            {/* Clean Checks Summary */}
+                            {cleanSignals.length > 0 && (
+                              <div style={{ marginBottom: 16 }}>
+                                <div style={{ fontSize: 11, fontWeight: 700, color: '#16a34a', letterSpacing: '0.08em', marginBottom: 8 }}>✓ PASSED CHECKS ({cleanSignals.length})</div>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                                  {cleanSignals.map((s, i) => (
+                                    <span key={i} style={{
+                                      fontSize: 10, background: '#f0fdf4', color: '#166534',
+                                      padding: '3px 8px', borderRadius: 6, fontWeight: 500
+                                    }}>{s.check.replace(/_/g, ' ')}</span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* ML Analysis */}
+                            {Object.keys(mlDetails).length > 0 && (
+                              <div style={{ marginBottom: 16 }}>
+                                <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', letterSpacing: '0.08em', marginBottom: 8 }}>🤖 ML ANALYSIS</div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                  {Object.entries(mlDetails).map(([key, val]) => (
+                                    <div key={key} style={{
+                                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                                      background: val.flag ? '#fef2f2' : '#f9fafb',
+                                      padding: '6px 10px', borderRadius: 6, fontSize: 11
+                                    }}>
+                                      <span style={{ fontWeight: 600, color: val.flag ? '#dc2626' : '#374151', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                                        {key.replace(/_/g, ' ')}
+                                      </span>
+                                      <span style={{ color: val.flag ? '#dc2626' : '#6b7280', fontWeight: 500, maxWidth: '60%', textAlign: 'right' }}>
+                                        {val.reason}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Field Analysis */}
+                            {Object.keys(fieldAnalysis).length > 0 && (
+                              <div style={{ marginBottom: 16 }}>
+                                <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', letterSpacing: '0.08em', marginBottom: 8 }}>📊 FIELD RISK ANALYSIS</div>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                                  {Object.entries(fieldAnalysis).map(([field, info]) => (
+                                    <div key={field} style={{
+                                      background: RISK_BG[info.risk] || '#f9fafb',
+                                      padding: '8px 10px', borderRadius: 8,
+                                      borderLeft: `3px solid ${RISK_COLOR[info.risk] || '#9ca3af'}`
+                                    }}>
+                                      <div style={{ fontSize: 9, color: '#9ca3af', fontWeight: 700, letterSpacing: '0.06em', marginBottom: 2 }}>
+                                        {field.replace(/_/g, ' ').toUpperCase()}
+                                      </div>
+                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <span style={{ fontSize: 11, fontWeight: 700, color: RISK_COLOR[info.risk] || '#6b7280' }}>{info.risk}</span>
+                                        <span style={{ fontSize: 10, color: '#9ca3af' }}>pen: {info.score}</span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
                             )}
 
                             {/* Recommendations */}
                             {d.recommendations?.length > 0 && (
                               <div>
-                                <div style={{ fontSize: 11, fontWeight: 700, color: '#9ca3af', letterSpacing: '0.08em', marginBottom: 8 }}>RECOMMENDATIONS</div>
+                                <div style={{ fontSize: 11, fontWeight: 700, color: '#9ca3af', letterSpacing: '0.08em', marginBottom: 8 }}>💡 RECOMMENDATIONS</div>
                                 {d.recommendations.map((r, i) => (
                                   <div key={i} style={{ display: 'flex', gap: 8, fontSize: 12, color: '#374151', marginBottom: 6, lineHeight: 1.5 }}>
                                     <span style={{ color: '#111827', fontWeight: 700, flexShrink: 0 }}>→</span> {r}

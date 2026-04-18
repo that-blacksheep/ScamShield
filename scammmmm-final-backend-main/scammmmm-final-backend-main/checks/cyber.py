@@ -197,7 +197,7 @@ FREE_EMAIL_PROVIDERS: Set[str] = {
 }
 
 DISPOSABLE_EMAIL_DOMAINS: Set[str] = {
-    "temp-mail.org", "temp-mail.io",
+    "temp-mail.org", "temp-mail.io", "tempmail.com",
     "guerrillamail.com", "guerrillamail.info", "guerrillamail.biz",
     "10minutemail.com", "10minutemail.net", "10minutemail.de",
     "mailinator.com", "mailinator.net",
@@ -351,10 +351,10 @@ _SALARY_DB: Dict[str, Any] = {
     "manager":        (2_500_000, 12_000_000),
     "director":       (5_000_000, 25_000_000),
     "vp":            (10_000_000, 50_000_000),
-    "default":          (300_000,  4_000_000),
-    "big_tech_ceiling":  30_000_000,
-    "indian_it_ceiling":  8_000_000,
-    "startup_ceiling":   12_000_000,
+    "default":          (300_000,  8_000_000),
+    "big_tech_ceiling":  60_000_000,
+    "indian_it_ceiling": 15_000_000,
+    "startup_ceiling":   25_000_000,
 }
 
 BIG_TECH_COMPANIES: Set[str] = {
@@ -394,12 +394,12 @@ def _homoglyph_normalize(text: str) -> str:
 def normalize_input(data: dict) -> dict:
     normalized: Dict[str, Any] = {"_raw": dict(data)}
 
-    job_url = (data.get("job_url") or "").strip()
+    job_url = (data.get("job_url") or "").strip().strip("\"'")
     normalized["job_url"] = job_url
     domain = ""
     subdomains: List[str] = []
     url_path = ""
-    if job_url:
+    if job_url and job_url.lower() not in {"n/a", "none"}:
         try:
             parsed = urlparse(job_url if "://" in job_url else f"https://{job_url}")
             domain = (parsed.hostname or "").lower().strip(".")
@@ -532,21 +532,33 @@ def check_email_validity(data: dict) -> dict:
                      "EMAIL_RISK", 0.99)
 
     if domain in FREE_EMAIL_PROVIDERS:
-        if company and len(company) > 3 and company.replace(" ", "") in local.replace(".", "").replace("_", ""):
-            return _flag(35, f"Recruiter impersonates '{company}' via free email ({email})",
-                         "EMAIL_RISK", 0.93)
-        return _flag(22, f"Recruiter uses free consumer email ({domain})",
-                     "EMAIL_RISK", 0.85)
+        company_clean = company.replace(" ", "")
+        local_clean = local.replace(".", "").replace("_", "").replace("-", "")
+        company_first = company.split()[0] if company else ""
+        impersonates = (
+            (len(company_clean) >= 2 and company_clean in local_clean) or
+            (len(company_first) >= 3 and company_first in local_clean)
+        )
+        if company and impersonates:
+            return _flag(45, f"Recruiter impersonates '{company}' via free email ({email})",
+                         "EMAIL_RISK", 0.95)
+        # Numeric or random local part on free email = higher penalty
+        digit_ratio_local = sum(c.isdigit() for c in local) / max(len(local), 1)
+        if digit_ratio_local > 0.55:
+            return _flag(45, f"Numeric throwaway address on free email ({email})",
+                         "EMAIL_RISK", 0.92)
+        return _flag(30, f"Recruiter uses free consumer email ({domain})",
+                     "EMAIL_RISK", 0.88)
 
     digit_ratio = sum(c.isdigit() for c in local) / max(len(local), 1)
     if digit_ratio > 0.55:
-        return _flag(18, f"Email local-part is mostly numeric ({local}@{domain}) — likely auto-generated",
-                     "EMAIL_RISK", 0.80)
+        return _flag(30, f"Email local-part is mostly numeric ({local}@{domain}) — likely auto-generated",
+                     "EMAIL_RISK", 0.88)
 
     entropy = _shannon_entropy(local)
-    if entropy > 3.8 and len(local) > 10:
-        return _flag(14, f"Email local-part appears randomly generated (entropy={entropy:.2f})",
-                     "EMAIL_RISK", 0.72)
+    if entropy > 3.8 and len(local) > 4:
+        return _flag(35, f"Email local-part appears randomly generated (entropy={entropy:.2f})",
+                     "EMAIL_RISK", 0.85)
 
     if company and company.replace(" ", "") in local and domain not in (
         data.get("canonical_domain", ""), ""
@@ -604,6 +616,17 @@ def check_typosquat(data: dict) -> dict:
             return _flag(45, f"Homoglyph attack detected: '{domain}' is visually identical to a known brand",
                          "IMPERSONATION_RISK", 0.97)
 
+    # Brand-name-in-domain check: if domain contains a known brand name
+    # but is NOT the official domain, flag as likely impersonation
+    d_lower = d_base.lower().replace("-", "").replace("_", "").replace(".", "")
+    for name, cdomain in CANONICAL_COMPANY_DOMAINS.items():
+        brand = name.lower().replace(" ", "")
+        c_base_clean = cdomain.rsplit(".", 1)[0].lower()
+        if len(brand) >= 3 and brand in d_lower and d_base.lower() != c_base_clean:
+            # The domain embeds a real brand name but is NOT the official domain
+            return _flag(35, f"Brand impersonation: '{domain}' contains brand name '{name}' but is not the official domain '{cdomain}'",
+                         "IMPERSONATION_RISK", 0.88)
+
     return _clean("No typosquat or homoglyph spoofing detected", "IMPERSONATION_RISK")
 
 
@@ -618,7 +641,7 @@ def check_url_structure(data: dict) -> dict:
     penalties: List[Tuple[int, str, float]] = []
 
     if domain in URL_SHORTENERS:
-        penalties.append((18, f"URL shortener hides true destination ({domain})", 0.82))
+        penalties.append((35, f"URL shortener hides true destination ({domain}) — never used in legitimate recruitment", 0.90))
 
     if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", domain):
         penalties.append((30, "URL uses a raw IP address — never legitimate recruitment", 0.95))
@@ -719,11 +742,17 @@ def check_salary_anomaly(data: dict) -> dict:
     salary  = data.get("salary_offered")
     company = data.get("company", "")
 
-    if salary is None:
+    if salary is None or salary == 0:
         return _skip("No salary provided")
 
     # Use shared SALARY_RANGES from ml layer
-    lo, hi = SALARY_RANGES.get("default", (300_000, 4_000_000))
+    lo, hi = SALARY_RANGES.get("default", (300_000, 8_000_000))
+
+    # Extract role if passed directly from frontend's Salary Tab (Role: <role>)
+    offer_text = data.get("offer_text", "")
+    role = ""
+    if offer_text.startswith("Role: "):
+        role = offer_text.replace("Role: ", "").strip().lower()
 
     if company in BIG_TECH_COMPANIES:
         ceiling = _SALARY_DB["big_tech_ceiling"]
@@ -732,9 +761,15 @@ def check_salary_anomaly(data: dict) -> dict:
     else:
         ceiling = _SALARY_DB["startup_ceiling"]
 
+    # Fraudulent 'Data Entry' / 'Typing' jobs usually dangle high salaries
+    scam_roles = {"data entry", "data entry operator", "typist", "form filling", "packing", "home packing"}
+    if role in scam_roles or any(r in role for r in scam_roles):
+        ceiling = 300_000  # Cap data entry at exactly ₹3 LPA
+
     if salary > ceiling:
         ratio = salary / ceiling
-        return _flag(28, f"Salary \u20b9{salary:,.0f} is {ratio:.1f}\u00d7 the top-of-market ceiling (\u20b9{ceiling:,.0f})",
+        role_msg = f" for '{role.title()}' role" if role else ""
+        return _flag(28, f"Salary ₹{salary:,.0f} is {ratio:.1f}× the realistic ceiling (₹{ceiling:,.0f}){role_msg}",
                      "SALARY_RISK", min(0.97, 0.75 + (ratio - 1) * 0.05))
 
     if salary > hi * 2.5:
@@ -745,7 +780,10 @@ def check_salary_anomaly(data: dict) -> dict:
         return _flag(6, f"Salary is a suspiciously round number (\u20b9{salary:,.0f})", "SALARY_RISK", 0.55)
 
     if salary < 60_000:
-        return _flag(12, f"Salary \u20b9{salary:,.0f}/year is below minimum wage — likely fraudulent",
+        if salary < 50_000:
+            return _flag(30, f"Salary ₹{salary:,.0f}/year is absurdly low — almost certainly fraudulent",
+                         "SALARY_RISK", 0.95)
+        return _flag(20, f"Salary ₹{salary:,.0f}/year is below minimum wage — likely fraudulent",
                      "SALARY_RISK", 0.82)
 
     return _clean(f"Salary \u20b9{salary:,.0f} is within market range", "SALARY_RISK")
@@ -755,8 +793,8 @@ def check_offer_text(data: dict) -> dict:
     raw  = data.get("offer_text", "")
     text = raw.lower()
 
-    if not text:
-        return _skip("No offer text provided")
+    if not text or len(text.strip()) < 15:
+        return _skip("No offer text provided or text too short")
 
     findings: List[str] = []
     raw_penalties: List[float] = []
@@ -799,9 +837,9 @@ def check_offer_text(data: dict) -> dict:
         raw_penalties.append(25)
         findings.append("Requests banking details directly in offer text")
 
-    if len(text.strip()) < 80:
+    if len(text.strip()) < 80 and raw_penalties:
         raw_penalties.append(6)
-        findings.append("Offer text is suspiciously brief for a legitimate job posting")
+        findings.append("Offer text is suspiciously brief and contains risky keywords")
 
     if not raw_penalties:
         return _clean("No scam patterns found in offer text", "CONTENT_RISK")
@@ -894,7 +932,8 @@ def check_cross_field_consistency(data: dict) -> dict:
             raw_penalties.append(22)
 
         if url_dom and url_dom not in {"n/a", "none", "unknown", ""}:
-            if url_dom != canonical and not url_dom.endswith("." + canonical):
+            is_job_board = any(url_dom == jb or url_dom.endswith("." + jb) for jb in TRUSTED_JOB_BOARDS)
+            if url_dom != canonical and not url_dom.endswith("." + canonical) and not is_job_board:
                 issues.append(f"Job URL domain '{url_dom}' \u2260 official domain '{canonical}'")
                 raw_penalties.append(20)
 
@@ -1019,6 +1058,32 @@ def analyze(data: dict) -> dict:
 
     final_score = max(0.0, min(100.0, _logistic_score(raw_penalty)))
 
+    # --- CANONICAL COMPANY FAST-PATH ---
+    # If the company is a verified canonical entity with ZERO flags raised,
+    # bypass coverage uncertainty entirely — it is definitively legitimate.
+    has_flags = any(r["flag"] for r in results)
+    is_canonical = any(
+        r["check"] == "company_reputation"
+        and not r["flag"]
+        and "Established registered entity" in r.get("reason", "")
+        for r in results
+    )
+    if is_canonical and not has_flags:
+        final_score = max(final_score, 90.0)
+
+    # Coverage-based uncertainty: only apply if NOT a canonical company
+    active  = [r for r in results if r["confidence"] > 0]
+    coverage = len(active) / max(len(CHECK_REGISTRY), 1)
+
+    if coverage < 0.45:
+        # Very low coverage — cap score and force REVIEW
+        uncertainty_penalty = (1.0 - coverage) * 25
+        final_score = max(0.0, min(final_score - uncertainty_penalty, 72))
+    elif coverage < 0.65:
+        # Moderate coverage — slight penalty
+        uncertainty_penalty = (1.0 - coverage) * 12
+        final_score = max(0.0, final_score - uncertainty_penalty)
+
     if final_score >= 82:
         verdict, risk = "SAFE", "LOW"
     elif final_score >= 58:
@@ -1028,9 +1093,16 @@ def analyze(data: dict) -> dict:
     else:
         verdict, risk = "SCAM", "CRITICAL"
 
+    # If coverage too low AND not a verified canonical company, never say SAFE
+    if coverage < 0.45 and verdict == "SAFE" and not (is_canonical and not has_flags):
+        verdict, risk = "REVIEW", "MEDIUM"
+
+    # Apply canonical fast-path verdict override
+    if is_canonical and not has_flags:
+        verdict, risk = "SAFE", "LOW"
+
     active_confs = [r["confidence"] for r in results if r["confidence"] > 0]
     mean_conf    = statistics.mean(active_confs) if active_confs else 0.0
-    coverage     = len([r for r in results if r["confidence"] > 0]) / max(len(CHECK_REGISTRY), 1)
     final_conf   = round(mean_conf * 0.75 + coverage * 0.25, 2)
 
     field_sums: Dict[str, float] = defaultdict(float)
@@ -1051,22 +1123,29 @@ def analyze(data: dict) -> dict:
     )
 
     recs: List[str] = []
-    if risk != "LOW":
-        recs.append("Do NOT share personal information (Aadhaar, PAN, bank details, OTP) with this recruiter.")
+    if risk in {"HIGH", "CRITICAL"}:
+        recs.append("CRITICAL: Do NOT share personal information (Aadhaar, PAN, bank details, OTP) with this recruiter.")
+        recs.append("Report this posting to the job platform, cybercrime.gov.in (India), and warn others.")
+    elif risk == "MEDIUM":
+        recs.append("Exercise caution and independently verify the employer details before sharing any personal data.")
+
     if "salary_anomaly" in flagged:
-        recs.append("Verify typical market salaries on Glassdoor, LinkedIn Salary, or AmbitionBox before engaging.")
+        recs.append("Verify typical market salaries on Glassdoor, LinkedIn Salary, or AmbitionBox. The offered compensation appears irregular.")
     if "email_validity" in flagged:
         recs.append("Confirm the recruiter email matches the company's official domain listed on their website.")
     if "cross_field_consistency" in flagged:
         recs.append("The job URL and email domain do not match the claimed company — independently verify on the official site.")
     if "typosquat" in flagged or "subdomain_abuse" in flagged:
-        recs.append("The website URL appears to impersonate a real company. Visit the real domain directly.")
+        recs.append("The website URL appears to impersonate a real company. Contact the official company directly to verify this posting.")
     if "offer_text" in flagged:
-        recs.append("The offer text contains payment requests or pressure tactics — a hallmark of employment fraud.")
-    if risk in {"HIGH", "CRITICAL"}:
-        recs.append("Report this posting to the job platform, cybercrime.gov.in (India), and warn others.")
-    if not recs:
-        recs.append("Proceed with normal due diligence — verify the company through official channels before sharing personal data.")
+        recs.append("The offer text contains common scam indicators (e.g., pressure tactics, fee requests). Do not send money.")
+    if "domain_age" in flagged:
+        recs.append("The domain provided is very new. Established businesses typically use older domains.")
+    if "phone_validity" in flagged:
+        recs.append("The provided contact number is suspicious or invalid. Rely on official company contact channels.")
+
+    if not recs or risk == "LOW":
+        recs = ["Proceed with normal due diligence — verify the company through official channels before sharing personal data."]
 
     return {
         "verdict":       verdict,

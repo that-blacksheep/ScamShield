@@ -140,12 +140,12 @@ app.add_middleware(
 #  Request / Response models
 # ─────────────────────────────────────────────────────────────
 class CheckRequest(BaseModel):
-    job_url:          str   = Field(default="N/A",     description="Job posting URL")
-    company_claimed:  str   = Field(default="Unknown", description="Company name as stated in offer")
-    recruiter_email:  str   = Field(default="",        description="Recruiter's email address")
-    phone_number:     str   = Field(default="",        description="Recruiter/HR phone number")
-    salary_offered:   float = Field(default=0,         ge=0, description="Annual salary in INR (0 = not provided)")
-    offer_text:       str   = Field(default="",        description="Full offer letter or email body")
+    job_url:          Optional[str]   = Field(default="N/A",     description="Job posting URL")
+    company_claimed:  Optional[str]   = Field(default="Unknown", description="Company name as stated in offer")
+    recruiter_email:  Optional[str]   = Field(default="",        description="Recruiter's email address")
+    phone_number:     Optional[str]   = Field(default="",        description="Recruiter/HR phone number")
+    salary_offered:   Optional[float] = Field(default=None,      ge=0, description="Annual salary in INR (None = not provided)")
+    offer_text:       Optional[str]   = Field(default="",        description="Full offer letter or email body")
 
 
 class StatsResponse(BaseModel):
@@ -192,6 +192,14 @@ def fuse_scores(cyber_report: dict, ml: dict) -> tuple[int, str, list[str]]:
         if "Fee language hard cap applied" not in reasons:
             reasons.append("Fee language hard cap applied — score capped at 20")
 
+    # Canonical company fast-path: cyber engine already verified this entity as SAFE.
+    # If no ML penalty fires, always return VERIFIED regardless of numeric floor.
+    cyber_verdict = cyber_report.get("verdict", "")
+    if cyber_verdict == "SAFE" and ml_penalty == 0 and not fee.get("hard_cap"):
+        final = max(final, 90)
+        verdict = "VERIFIED"
+        return int(final), verdict, reasons
+
     # Single verdict thresholds
     if   final >= 80: verdict = "VERIFIED"
     elif final >= 55: verdict = "UNVERIFIED"
@@ -207,12 +215,12 @@ def fuse_scores(cyber_report: dict, ml: dict) -> tuple[int, str, list[str]]:
 @app.post("/api/check")
 def check(req: CheckRequest):
     cyber_input = {
-        "job_url":         req.job_url,
-        "company_claimed": req.company_claimed,
-        "recruiter_email": req.recruiter_email,
-        "phone_number":    req.phone_number,
+        "job_url":         req.job_url or "N/A",
+        "company_claimed": req.company_claimed or "Unknown",
+        "recruiter_email": req.recruiter_email or "",
+        "phone_number":    req.phone_number or "",
         "salary_offered":  req.salary_offered,
-        "offer_text":      req.offer_text,
+        "offer_text":      req.offer_text or "",
     }
 
     try:
@@ -225,7 +233,7 @@ def check(req: CheckRequest):
                         "recommendations": ["Run analysis again; cyber checks unavailable"]}
 
     try:
-        ml_report = run_ml_checks(req.offer_text, req.salary_offered, req.company_claimed)
+        ml_report = run_ml_checks(req.offer_text or "", req.salary_offered if req.salary_offered is not None else 0, req.company_claimed or "Unknown")
     except Exception as exc:
         logger.error("ML engine error: %s", exc)
         ml_report = {"details": {}}

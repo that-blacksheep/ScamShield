@@ -18,7 +18,7 @@ logger = logging.getLogger("scamshield.ml")
 #  Shared salary ranges — imported by cyber.py too
 # ─────────────────────────────────────────────────────────────
 SALARY_RANGES: Dict[str, tuple[float, float]] = {
-    "default":    (200_000,  1_500_000),
+    "default":    (200_000,  8_000_000),
     "fresher":    (200_000,    800_000),
     "entry":      (300_000,  1_200_000),
     "mid":        (600_000,  3_000_000),
